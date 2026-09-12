@@ -39,8 +39,13 @@ def load_config(path=None):
     p = Path(path) if path else CONFIG_PATH
     cfg = json.loads(p.read_text(encoding="utf-8"))
     cfg.setdefault("slack", {})
+    env_hook = env("SLACK_WEBHOOK_NEWS") or env("SLACK_WEBHOOK_URL")
     if not (cfg["slack"].get("webhook_url") or "").strip():
-        cfg["slack"]["webhook_url"] = env("SLACK_WEBHOOK_NEWS") or env("SLACK_WEBHOOK_URL")
+        cfg["slack"]["webhook_url"] = env_hook
+    # 환경변수로 웹훅이 들어왔으면(=GitHub Actions 등 클라우드) config 의 mode 와 무관하게 웹훅.
+    # 클라우드엔 로그인된 크롬이 없어서 playwright 모드면 웹훅이 있어도 전송이 실패한다.
+    if env_hook:
+        cfg["slack"]["mode"] = "webhook"
     ch = env("SLACK_NEWS_CHANNEL_URL")
     if ch:
         cfg["slack"].setdefault("playwright", {})["channel_url"] = ch

@@ -19,6 +19,8 @@ from radar.config import load_config  # noqa: E402
 PASS = FAIL = 0
 UTC = timezone.utc
 CFG = load_config()
+# 시세 로직 테스트는 설정의 on/off 와 무관하게 돌아야 한다(운영에선 꺼둘 수 있음)
+PX_CFG = dict(CFG, price_watch=dict(CFG.get("price_watch", {}), enabled=True))
 
 
 def check(name, cond, detail=""):
@@ -122,34 +124,34 @@ def test_price():
 
     picked = {"BTCUSDT": {"symbol": "BTCUSDT", "price": 100000.0, "pct24h": 1.0,
                           "quote_vol": 1e9}}
-    first = score.price_alerts(CFG, picked, [], get, setf)
+    first = score.price_alerts(PX_CFG, picked, [], get, setf)
     check("첫 관측은 알림 없음", first == [])
     check("직전가 저장됨", mem.get("px:BTCUSDT") == "100000.0", mem.get("px:BTCUSDT"))
 
     picked["BTCUSDT"]["price"] = 105000.0       # +5% > 임계 2.5%
-    second = score.price_alerts(CFG, picked, [], get, setf)
+    second = score.price_alerts(PX_CFG, picked, [], get, setf)
     check("단기 급등 감지", len(second) == 1 and "급등" in second[0]["title"], second)
-    check("급등 알림 점수 >= min", second and second[0]["score"] >= CFG["min_score"])
+    check("급등 알림 점수 >= min", second and second[0]["score"] >= PX_CFG["min_score"])
 
     picked["BTCUSDT"]["price"] = 105100.0       # +0.1% — 임계 미만
-    check("미세 변동 무시", score.price_alerts(CFG, picked, [], get, setf) == [])
+    check("미세 변동 무시", score.price_alerts(PX_CFG, picked, [], get, setf) == [])
 
     mem.clear()
     p24 = {"ETHUSDT": {"symbol": "ETHUSDT", "price": 4000.0, "pct24h": -12.0, "quote_vol": 1e9}}
-    a = score.price_alerts(CFG, p24, [], get, setf)
+    a = score.price_alerts(PX_CFG, p24, [], get, setf)
     check("24h 급변 감지", len(a) == 1 and "24시간" in a[0]["title"], a)
-    check("같은 시간대 재알림 차단", score.price_alerts(CFG, p24, [], get, setf) == [])
+    check("같은 시간대 재알림 차단", score.price_alerts(PX_CFG, p24, [], get, setf) == [])
 
     mem.clear()
     rows = [{"symbol": "AAAUSDT", "price": 1.0, "pct24h": 40.0, "quote_vol": 5e7},
             {"symbol": "BBBUSDT", "price": 1.0, "pct24h": 90.0, "quote_vol": 1e5}]
-    scan = score.price_alerts(CFG, {}, rows, get, setf)
+    scan = score.price_alerts(PX_CFG, {}, rows, get, setf)
     syms = [s["title"].split()[0] for s in scan]
     check("시장 스캔 감지", "AAA" in syms, syms)
     check("거래대금 미달 제외", "BBB" not in syms, syms)
 
-    off = dict(CFG)
-    off["price_watch"] = dict(CFG["price_watch"], enabled=False)
+    off = dict(PX_CFG)
+    off["price_watch"] = dict(PX_CFG["price_watch"], enabled=False)
     check("enabled=false 면 무동작", score.price_alerts(off, picked, rows, get, setf) == [])
 
 
@@ -221,6 +223,13 @@ def test_config_and_cycle():
     if ok:
         check("모든 토픽 스키마 정상", True)
     check("임계값 순서", CFG["min_score"] < CFG["urgent_score"])
+    os.environ["SLACK_WEBHOOK_URL"] = "https://example.invalid/hook"
+    try:
+        forced = load_config()
+    finally:
+        del os.environ["SLACK_WEBHOOK_URL"]
+    check("환경변수 웹훅이면 모드 강제 webhook", forced["slack"]["mode"] == "webhook"
+          and notify.backend_of(forced) == "webhook", forced["slack"].get("mode"))
     kst_now = datetime(2026, 9, 10, 3, 0, tzinfo=config.KST)
     check("조용시간 없음=False", config.in_quiet_hours({"quiet_hours": []}, kst_now) is False)
     check("조용시간 적중", config.in_quiet_hours({"quiet_hours": [2, 3, 4]}, kst_now) is True)
