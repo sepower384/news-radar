@@ -1,0 +1,37 @@
+# 코드를 고쳤을 때만 도는 검증. 알림 사이클(radar.yml)은 이걸 기다리지 않는다.
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+
+      - name: 자체검증 (오프라인 70개)
+        env: { PYTHONUTF8: '1' }
+        run: python tests/test_all.py
+
+      - name: 무료 소스가 아직 살아있는지 (실패해도 머지는 막지 않는다)
+        env: { PYTHONUTF8: '1' }
+        run: python tests/test_all.py --live || echo "::warning::무료 소스 중 하나가 응답하지 않는다. sources.py 확인 필요"
+
+      - name: 비밀값이 커밋에 없는지
+        run: |
+          if git ls-files | grep -qE '(^|/)\.env$'; then
+            echo "::error::.env 가 커밋되어 있다"; exit 1
+          fi
+          if git grep -nIE 'hooks\.slack\.com/services/[A-Z0-9]' -- ':!*.md' ':!*.yml'; then
+            echo "::error::슬랙 웹훅 주소가 소스에 박혀 있다"; exit 1
+          fi
+          echo "secrets 검사 통과"

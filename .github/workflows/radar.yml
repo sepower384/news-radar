@@ -1,0 +1,73 @@
+# 뉴스 레이더 — 강회장 PC 가 꺼져 있어도 깃허브가 대신 돌린다.
+#
+# ── 왜 클라우드인가 ────────────────────────────────────────────────
+# 로컬 예약작업(install_task.ps1)은 노트북을 닫는 순간 멈춘다. 그리고
+# **멈춘 걸 아무도 모른다.** 뉴스 알림은 "안 온 것"과 "일이 없는 것"이
+# 구분이 안 되니까 더 위험하다. 그래서 감시는 깃허브에서 돌린다.
+#
+# ── 중복 방지 상태는 어디 있나 ──────────────────────────────────────
+# data/radar.db(30일치 seen + 직전가)를 actions/cache 로 이어붙인다.
+# 캐시가 날아가면 DB 가 새것이 되고, first_run_silent 가 켜져 있어서
+# 그 한 사이클은 **조용히 학습만 하고 지나간다** — 과거 기사 폭탄이 아니라
+# 알림 한 번 거르는 쪽으로 실패한다. 의도된 실패 방향이다.
+name: 뉴스 레이더
+
+on:
+  schedule:
+    # 15분마다. 깃허브 스케줄은 부하에 따라 5~15분 밀릴 수 있다(정상).
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 손으로도 즉시 돌릴 수 있게
+
+concurrency:
+  group: radar
+  cancel-in-progress: false # 돌고 있으면 끼어들지 않는다(중복 알림 방지)
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - run: pip install -r requirements.txt
+
+      # 이전 사이클의 "이미 보낸 것" 기억을 이어받는다
+      - name: 상태 복원
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: radar-state-${{ github.run_id }}
+          restore-keys: |
+            radar-state-
+
+      - name: 상태 확인
+        run: |
+          if [ -f data/radar.db ]; then
+            echo "캐시 적중 — 중복 방지 기억 이어받음 ($(du -h data/radar.db | cut -f1))"
+          else
+            echo "::warning::캐시 없음 — 이번 사이클은 조용히 학습만 하고 지나간다"
+          fi
+
+      - name: 수집 · 채점 · 슬랙 전송
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PYTHONUTF8: '1'
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::error::저장소 Secrets 에 SLACK_WEBHOOK_URL 이 없다. Settings → Secrets and variables → Actions 에서 추가할 것"
+            exit 1
+          fi
+          python run_once.py
+
+      # 전송이 실패했어도 상태는 남겨야 한다(실패한 건은 seen 에 안 들어가서 다음 턴 재시도됨)
+      - name: 상태 저장
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: radar-state-${{ github.run_id }}

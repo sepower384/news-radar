@@ -1,0 +1,97 @@
+{
+  "slack": {
+    "mode": "webhook",
+    "webhook_url": "",
+    "playwright": {
+      "cdp": "http://127.0.0.1:9222",
+      "channel_url": ""
+    }
+  },
+  "min_score": 60,
+  "urgent_score": 85,
+  "max_items_per_run": 12,
+  "max_per_topic": 3,
+  "first_run_silent": true,
+  "lookback_hours": 6,
+  "interval_sec": 900,
+  "price_interval_sec": 300,
+  "quiet_hours": [],
+  "price_watch": {
+    "enabled": false,
+    "symbols": ["BTCUSDT", "ETHUSDT", "ZECUSDT", "HYPEUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"],
+    "spike_pct_short": 2.5,
+    "spike_pct_24h": 8.0,
+    "market_scan": true,
+    "market_scan_pct": 15.0,
+    "market_scan_min_quote_vol": 30000000
+  },
+  "topics": {
+    "금리·통화정책": {
+      "queries": ["기준금리", "FOMC", "연준 금리", "한국은행 금통위", "Fed rate decision", "CPI inflation report"],
+      "keywords": ["금리", "연준", "fed", "fomc", "파월", "powell", "금통위", "한국은행", "인플레", "cpi", "ppi", "긴축", "완화", "양적", "국채", "실업률", "고용지표", "rate cut", "rate hike", "inflation", "treasury yield"],
+      "weight": 22
+    },
+    "호르무즈·지정학": {
+      "queries": ["호르무즈 해협", "Strait of Hormuz", "이란 유조선", "중동 유가"],
+      "keywords": ["호르무즈", "hormuz", "이란", "iran", "봉쇄", "blockade", "유조선", "tanker", "유가", "oil price", "원유", "opec", "중동", "이스라엘", "israel", "공습", "strike", "미사일", "missile", "전쟁", "war", "휴전", "ceasefire", "제재", "sanction"],
+      "weight": 24
+    },
+    "트럼프·주요인사 발언": {
+      "queries": ["트럼프 발언", "Trump announces", "Trump tariff", "백악관 발표", "재무장관 발언"],
+      "keywords": ["트럼프", "trump", "백악관", "white house", "관세", "tariff", "행정명령", "executive order", "베선트", "bessent", "파월", "powell", "머스크", "musk", "시진핑", "xi jinping", "푸틴", "putin", "재무장관", "treasury secretary", "sec 위원장", "gensler", "atkins"],
+      "weight": 20
+    },
+    "비트코인": {
+      "queries": ["비트코인", "Bitcoin ETF", "bitcoin price crash", "bitcoin regulation"],
+      "keywords": ["비트코인", "bitcoin", "btc", "etf", "현물etf", "반감기", "halving", "마이크로스트래티지", "microstrategy", "strategy", "채굴", "mining", "고래", "whale", "청산", "liquidation"],
+      "weight": 22
+    },
+    "지캐시(ZEC)": {
+      "queries": ["지캐시", "Zcash ZEC", "Zcash news"],
+      "keywords": ["지캐시", "zcash", "zec", "프라이버시 코인", "privacy coin", "shielded"],
+      "weight": 26
+    },
+    "하이퍼리퀴드(HYPE)": {
+      "queries": ["하이퍼리퀴드", "Hyperliquid HYPE", "Hyperliquid exploit"],
+      "keywords": ["하이퍼리퀴드", "hyperliquid", "hype", "hlp", "퍼프", "perp dex"],
+      "weight": 26
+    },
+    "코인 전반·규제": {
+      "queries": ["가상자산 규제", "crypto exchange hack", "SEC crypto", "코인 상장폐지", "스테이블코인"],
+      "keywords": ["가상자산", "암호화폐", "crypto", "이더리움", "ethereum", "solana", "리플", "xrp", "스테이블코인", "stablecoin", "usdt", "테더", "tether", "usdc", "거래소", "exchange", "업비트", "빗썸", "바이낸스", "binance", "코인베이스", "coinbase", "해킹", "hack", "exploit", "러그", "rug", "상장", "listing", "상장폐지", "delist", "디파이", "defi", "sec", "cftc", "규제", "regulation"],
+      "weight": 18
+    },
+    "AI": {
+      "queries": ["OpenAI announces", "Anthropic Claude", "Nvidia AI chip", "AI 규제", "AI 반도체"],
+      "keywords": ["openai", "chatgpt", "anthropic", "claude", "gemini", "구글 딥마인드", "deepmind", "엔비디아", "nvidia", "gpu", "반도체", "tsmc", "asml", "llm", "agi", "ai 규제", "ai act", "메타 ai", "llama", "sora", "xai", "grok", "데이터센터", "data center", "hbm", "sk하이닉스", "삼성전자 hbm"],
+      "weight": 18
+    }
+  },
+  "urgency_keywords": {
+    "속보": 30, "긴급": 30, "breaking": 30, "urgent": 25,
+    "급등": 22, "급락": 24, "폭락": 28, "폭등": 24, "붕괴": 26, "패닉": 26,
+    "crash": 26, "plunge": 24, "surge": 18, "soars": 16, "collapse": 26, "plummet": 24,
+    "해킹": 30, "hack": 28, "exploit": 28, "해킹당": 30, "탈취": 26, "유출": 20,
+    "파산": 28, "bankrupt": 28, "디폴트": 28, "default": 14, "청산": 18, "liquidat": 18,
+    "승인": 20, "approve": 18, "거부": 20, "reject": 16, "금지": 24, "ban": 20,
+    "중단": 20, "halt": 22, "동결": 18, "freeze": 18, "출금중단": 32, "입출금 중단": 30,
+    "인하": 22, "인상": 22, "rate cut": 24, "rate hike": 24, "동결 결정": 20,
+    "봉쇄": 28, "공습": 30, "폭격": 30, "미사일": 24, "전쟁": 26, "침공": 30,
+    "사임": 22, "해임": 24, "resign": 20, "fired": 18,
+    "상장폐지": 26, "delist": 24, "소송": 16, "lawsuit": 16, "기소": 20, "indict": 20,
+    "사상 최고": 20, "사상 최대": 20, "record high": 18, "all-time high": 20, "ath": 14,
+    "발표": 8, "announce": 8, "합의": 14, "타결": 18, "결렬": 20
+  },
+  "noise_keywords": ["전망", "분석", "칼럼", "오피니언", "opinion", "op-ed", "시황", "마감", "브리핑", "할까", "될까", "일까",
+    "price prediction", "could", "might", "sponsored", "advertorial", "how to", "guide", "top 5", "top 10",
+    "best ", "review", "인터뷰", "기고", "주간", "월간", "특집", "코인 추천", "유망"],
+  "sources": {
+    "google_news": true,
+    "fed": true,
+    "coindesk": true,
+    "cointelegraph": true,
+    "theblock": true,
+    "binance_announcements": true,
+    "upbit_notices": true
+  }
+}
