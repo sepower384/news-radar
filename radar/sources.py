@@ -186,13 +186,26 @@ def upbit_notices():
 
 # ---------------------------------------------------------------- 가격 급변
 
+# api.binance.com 은 미국 IP 를 451 로 막는다 → GitHub Actions(미국 서버)에선 0건.
+# data-api.binance.vision 은 바이낸스 공식 공개시세 미러라 지역 차단이 없다.
+BINANCE_TICKER_URLS = (
+    "https://api.binance.com/api/v3/ticker/24hr",
+    "https://data-api.binance.vision/api/v3/ticker/24hr",
+)
+
+
 def binance_tickers(symbols):
-    try:
-        r = _get("https://api.binance.com/api/v3/ticker/24hr")
-        rows = r.json()
-    except Exception:
-        return {}, []
-    if not isinstance(rows, list):
+    rows = None
+    for url in BINANCE_TICKER_URLS:
+        try:
+            r = _get(url)
+            js = r.json() if r.status_code == 200 else None
+        except Exception:
+            js = None
+        if isinstance(js, list) and js:
+            rows = js
+            break
+    if rows is None:
         return {}, []
     wanted = {s.upper() for s in symbols}
     picked, allrows = {}, []
