@@ -195,13 +195,15 @@ def test_notify():
     check("header 블록", blocks[0]["type"] == "header")
     check("context 꼬리", blocks[-1]["type"] == "context")
     check("divider 안 남김", blocks[-2]["type"] != "divider")
-    body = blocks[1]["text"]["text"]
+    check("안내 문구", blocks[1]["type"] == "context")
+    body = blocks[2]["text"]["text"]
     check("링크 mrkdwn", "<https://" in body and "|" in body)
+    check("왜 중요한지 설명", "왜 중요해요?" in body)
     check("꺾쇠 이스케이프", "&lt;" in notify._line(dict(it, title="<script>"), 85))
     e, tier = notify._tier(95, 85)
     check("긴급 티어", tier == "긴급" and e == "🚨")
     check("참고 티어", notify._tier(61, 85)[1] == "참고")
-    check("published None 안전", "score" in notify._line(dict(it, published=None), 85))
+    check("published None 안전", "중요도" in notify._line(dict(it, published=None), 85))
     check("백엔드 판정 none",
           notify.backend_of({"slack": {"mode": "webhook", "webhook_url": ""}}) == "none")
     check("백엔드 판정 webhook",
