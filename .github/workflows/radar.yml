@@ -52,14 +52,28 @@ jobs:
             echo "::warning::캐시 없음 — 이번 사이클은 조용히 학습만 하고 지나간다"
           fi
 
-      - name: 수집 · 채점 · 슬랙 전송
+      # 슬랙·텔레그램 동시 발송 기간. 둘 중 하나만 있어도 돈다(없는 쪽은 조용히 건너뜀).
+      - name: 수집 · 채점 · 슬랙/텔레그램 전송
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN_NEWS: ${{ secrets.TELEGRAM_BOT_TOKEN_NEWS }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC_NEWS: ${{ secrets.TELEGRAM_TOPIC_NEWS }}
           PYTHONUTF8: '1'
         run: |
-          if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "::error::저장소 Secrets 에 SLACK_WEBHOOK_URL 이 없다. Settings → Secrets and variables → Actions 에서 추가할 것"
+          HAS_TG=""
+          if { [ -n "$TELEGRAM_BOT_TOKEN_NEWS" ] || [ -n "$TELEGRAM_BOT_TOKEN" ]; } && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            HAS_TG=1
+          fi
+          if [ -z "$SLACK_WEBHOOK_URL" ] && [ -z "$HAS_TG" ]; then
+            echo "::error::알림 경로가 없다. Secrets 에 SLACK_WEBHOOK_URL 또는 TELEGRAM_BOT_TOKEN_NEWS(또는 TELEGRAM_BOT_TOKEN)+TELEGRAM_CHAT_ID 를 추가할 것"
             exit 1
+          fi
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then echo "::notice::SLACK_WEBHOOK_URL 없음 — 텔레그램으로만 보낸다"; fi
+          if [ -z "$HAS_TG" ]; then echo "::notice::텔레그램 변수 없음 — 슬랙으로만 보낸다"; fi
+          if [ -n "$HAS_TG" ] && [ -z "$TELEGRAM_TOPIC_NEWS" ]; then
+            echo "::warning::TELEGRAM_TOPIC_NEWS 가 없어 슈퍼그룹 일반 대화방으로 간다"
           fi
           python run_once.py
 

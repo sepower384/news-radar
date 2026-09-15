@@ -39,6 +39,23 @@ python run_once.py                       # 실제 1회 수집 → 전송
 - 60일간 아무 커밋이 없으면 깃허브가 스케줄을 자동 정지시킨다. 알림이 조용해지면 이걸 먼저 의심할 것.
 - 클라우드에서는 **웹훅만 쓸 수 있다.** Playwright(로그인된 크롬 조종) 경로는 강회장 PC 에만 있는 크롬이 필요해서 클라우드에선 불가능하다.
 
+## 1-3. 텔레그램 (슬랙과 동시 발송)
+
+텔레그램 토픽 **📰 세력의 정보원**(봇: 세력의 비서실장)으로도 같은 내용이 나간다. 변수가 없으면 조용히 건너뛴다.
+
+| 환경변수 / Secret | 뜻 |
+|---|---|
+| `TELEGRAM_BOT_TOKEN_NEWS` | 뉴스 전용 봇 토큰. **있으면 이게 우선** |
+| `TELEGRAM_BOT_TOKEN` | 공용 봇 토큰(전용 토큰이 없을 때) |
+| `TELEGRAM_CHAT_ID` | 슈퍼그룹 ID (`-100…`) |
+| `TELEGRAM_TOPIC_NEWS` | 토픽 스레드 ID (비우면 일반 대화방) |
+
+- `parse_mode=HTML`, 링크 미리보기 끔. 4096자를 넘으면 **기사 경계**에서 나눠 1초 간격으로 보낸다. 429 는 `retry_after` 만큼 쉬고 1회 재시도.
+- 사진: 메시지당 최대 1장(가장 중요한 기사). RSS `media:content`/`enclosure`/`media:thumbnail` → 없으면 원문 `og:image`(6초). 구글뉴스 링크는 og:image 가 안 나와서 요청하지 않는다. 사진이 실패해도 본문은 반드시 나간다.
+- **seen 규칙**: 슬랙·텔레그램 중 **하나라도 성공하면 등록**. 둘 다 실패한 기사만 다음 턴 재시도. (한쪽만 실패했다고 재시도하면 성공한 쪽에 15분마다 같은 기사가 쌓인다.) 한쪽 실패는 Actions 에 `::warning::` 으로 뜬다.
+- 말투는 전부 합니다체, 어려운 단어는 `radar/glossary.py` 용어집으로 처음 한 번만 괄호 풀이.
+- `python run_once.py preview-telegram` → `data/outbox/preview_telegram.html` + `preview_slack.txt`. 전송도 seen 등록도 안 한다.
+
 ## 2. 명령어
 
 | 명령 | 하는 일 |
@@ -50,7 +67,7 @@ python run_once.py                       # 실제 1회 수집 → 전송
 | `pythonw watch.py` | 상시 루프(창 없음). 뉴스 15분 · 시세 5분 |
 | `.\scripts\install_task.ps1` | 로그인 시 자동시작 + 30분마다 생존확인 |
 | `.\scripts\install_task.ps1 -Remove` / `.\scripts\stop_watch.ps1` | 해제 / 중지 |
-| `python tests\test_all.py [--live]` | 자체검증 70개 (`--live` 면 실제 소스까지 75개) |
+| `python tests\test_all.py [--live]` | 자체검증 141개 (`--live` 면 실제 소스까지 146개) |
 
 ## 3. 어떻게 "큰 것만" 거르나
 
@@ -104,11 +121,13 @@ radar/config.py      config.json + .env 로딩, 조용시간 판정
 radar/sources.py     무료 소스 수집 (RSS는 표준 라이브러리로 직접 파싱)
 radar/score.py       스코어링 + 가격 급변 판정
 radar/store.py       중복 방지·상태 저장 (SQLite, data/radar.db)
-radar/notify.py      슬랙 전송 (웹훅 / 크롬 폴백)
+radar/notify.py      알림 조립(합니다체·용어풀이) + 슬랙·텔레그램 동시 전송
+radar/telegram.py    텔레그램 전송·HTML 변환·4096자 분할
+radar/glossary.py    어려운 단어 풀이 용어집
 radar/runner.py      한 사이클 오케스트레이션
 run_once.py          1회 실행 CLI      watch.py  상시 루프(pythonw)
 scripts/             숨김 실행 vbs · 예약작업 등록/해제
-tests/test_all.py    자체검증 70 + 라이브 5
+tests/test_all.py    자체검증 141 + 라이브 5
 ```
 
 ## 8. 함정 메모

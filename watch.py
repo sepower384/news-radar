@@ -84,6 +84,8 @@ def main():
             if mode == "all":
                 last_news = now
             res = runner.cycle(mode, log=lambda m: None, cfg=cfg)
+            for err in res.get("channel_errors") or []:
+                log("%s 사이클 일부 채널 실패: %s" % (mode, err))
             if res.get("error"):
                 log("%s 사이클 전송실패: %s" % (mode, res["error"]))
             elif res["sent"]:

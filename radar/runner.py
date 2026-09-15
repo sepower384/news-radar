@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
-"""한 사이클: 수집 → 스코어 → 중복제거 → 가격감시 → 문지기 → 슬랙."""
+"""한 사이클: 수집 → 스코어 → 중복제거 → 가격감시 → 문지기 → 슬랙·텔레그램."""
+import html
 from datetime import datetime
 
-from radar import notify, score, sources, store
-from radar.config import KST, in_quiet_hours, load_config
+from radar import notify, score, sources, store, telegram
+from radar.config import DATA_DIR, KST, in_quiet_hours, load_config
+
+OUTBOX = DATA_DIR / "outbox"
 
 
 def _noop(*_a, **_k):
     return None
 
 
-def _pick_new(items, seen_this_run):
+def _pick_new(items, seen_this_run, ignore_seen=False):
     """DB 기준 처음 보는 것만 추린다. (등록은 전송 성공 후)"""
     keyed = []
     for it in items:
@@ -19,8 +22,8 @@ def _pick_new(items, seen_this_run):
             continue
         seen_this_run.add(k)
         keyed.append((k, it))
-    if not keyed:
-        return []
+    if not keyed or ignore_seen:
+        return keyed
     fresh = store.is_new([k for k, _ in keyed])
     return [(k, it) for k, it in keyed if k in fresh]
 
@@ -48,14 +51,14 @@ def collect_price(cfg, dry=False, log=print):
     return alerts
 
 
-def cycle(mode="all", dry=False, log=print, cfg=None):
-    """mode: all | news | price. dry=True 면 전송·DB기록 없이 결과만 반환."""
-    cfg = cfg or load_config()
-    started = datetime.now(KST)
-    res = {"at": started.strftime("%Y-%m-%d %H:%M:%S KST"), "mode": mode, "dry": dry,
-           "news_candidates": 0, "price_alerts": 0, "picked": 0, "sent": 0,
-           "quiet": False, "first_run": False, "items": [], "error": None}
+def _new_result(mode, dry, started):
+    return {"at": started.strftime("%Y-%m-%d %H:%M:%S KST"), "mode": mode, "dry": dry,
+            "news_candidates": 0, "price_alerts": 0, "picked": 0, "sent": 0,
+            "quiet": False, "first_run": False, "items": [], "error": None,
+            "channels": [], "channel_errors": []}
 
+
+def _gather(cfg, mode, dry, log, res):
     candidates = []
     if mode in ("all", "news"):
         scored = collect_news(cfg, log=log)
@@ -64,14 +67,16 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
         res["news_candidates"] = len(passed)
         log("  스코어 %d점 이상 %d건" % (min_score, len(passed)))
         candidates.extend(passed)
-
     if mode in ("all", "price"):
         pa = collect_price(cfg, dry=dry, log=log)
         res["price_alerts"] = len(pa)
         candidates.extend(pa)
+    return candidates
 
-    seen_this_run = set()
-    new = _pick_new(candidates, seen_this_run)
+
+def _select(cfg, candidates, started, log, res, ignore_seen=False):
+    """중복제거 → 조용시간 → 토픽 상한 → 전체 상한. (new, dropped) 반환."""
+    new = _pick_new(candidates, set(), ignore_seen=ignore_seen)
     new.sort(key=lambda kv: kv[1]["score"], reverse=True)
 
     urgent_score = cfg.get("urgent_score", 85)
@@ -99,6 +104,16 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
     res["items"] = [{"score": i["score"], "topic": i.get("topic", ""),
                      "title": i.get("title", ""), "url": i.get("url", ""),
                      "source": i.get("source", "")} for _, i in new]
+    return new, dropped
+
+
+def cycle(mode="all", dry=False, log=print, cfg=None):
+    """mode: all | news | price. dry=True 면 전송·DB기록 없이 결과만 반환."""
+    cfg = cfg or load_config()
+    started = datetime.now(KST)
+    res = _new_result(mode, dry, started)
+    candidates = _gather(cfg, mode, dry, log, res)
+    new, dropped = _select(cfg, candidates, started, log, res)
 
     if dry:
         log("  [dry-run] 전송 안 함 — 통과 %d건" % len(new))
@@ -118,14 +133,122 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
         return res
 
     try:
-        sent = notify.deliver(cfg, [i for _, i in new], log=log)
-    except Exception as e:  # 전송 실패 시 seen 등록을 안 해야 다음 턴에 재시도된다
+        rep = notify.deliver(cfg, [i for _, i in new], log=log)
+    except Exception as e:  # 전송 경로 자체가 없으면 seen 등록을 안 해야 다음 턴에 재시도된다
         res["error"] = str(e)
         log("  전송 실패 — seen 미등록(다음 턴 재시도): %s" % e)
         return res
+    return apply_report(res, new, dropped, rep, log=log)
 
-    store.mark_seen([k for k, _ in new] + [k for k, _ in dropped])
-    store.log_sent([i for _, i in new])
-    res["sent"] = sent
-    log("  슬랙 전송 %d건" % sent)
+
+def apply_report(res, new, dropped, rep, log=print):
+    """seen 등록 규칙 — 채널 중 **하나라도** 성공한 기사만 등록한다.
+
+    둘 다 실패한 기사만 미등록(다음 턴 재시도). 한쪽만 성공했을 때 재시도하면
+    성공한 쪽(예: 슬랙)에 15분마다 같은 기사가 계속 쌓이는 중복 폭탄이 되기 때문이다.
+    실패한 채널의 누락은 channel_errors 로 남긴다.
+    """
+    ok_ids = {id(i) for i in rep["sent_items"]}
+    ok = [(k, i) for k, i in new if id(i) in ok_ids]
+    res["channels"] = rep.get("channels", [])
+    res["channel_errors"] = rep.get("channel_errors", [])
+    if ok:
+        # 접힌 건(토픽/전체 상한)은 이번 알림이 실제로 나갔을 때만 같이 묻는다
+        store.mark_seen([k for k, _ in ok] + [k for k, _ in dropped])
+        store.log_sent([i for _, i in ok])
+    res["sent"] = len(ok)
+    if rep["failed_items"]:
+        res["error"] = "모든 채널 전송 실패 %d건 — seen 미등록(다음 턴 재시도): %s" % (
+            len(rep["failed_items"]), " / ".join(rep["channel_errors"])[:300])
+        log("  " + res["error"])
+    log("  전송 %d건 (채널: %s)" % (len(ok), ",".join(res["channels"]) or "-"))
     return res
+
+
+# ─────────────────────────────────────────────────────────── 미리보기
+
+def preview(cfg=None, log=print, out_dir=None, fetch_og=None, translate=None):
+    """실제 수집 데이터로 슬랙·텔레그램 메시지를 만들어 파일로만 저장한다.
+
+    전송 0, seen 등록 0, 직전가 기록 0(dry). 새 기사가 없으면 seen 을 무시한 후보로 대신 보여준다.
+    """
+    cfg = cfg or load_config()
+    out_dir = out_dir or OUTBOX
+    out_dir.mkdir(parents=True, exist_ok=True)
+    started = datetime.now(KST)
+    res = _new_result("all", True, started)
+    candidates = _gather(cfg, "all", True, log, res)
+    new, _ = _select(cfg, candidates, started, log, res)
+    ignored_seen = False
+    if not new and candidates:
+        ignored_seen = True
+        log("  새 기사가 없어 이미 본 기사까지 포함해 미리보기를 만듭니다")
+        new, _ = _select(cfg, candidates, started, log, res, ignore_seen=True)
+
+    kw = {"with_photo": True, "fetch_og": fetch_og}
+    if translate:
+        kw["translate"] = translate
+    batches = notify.render_batches(cfg, [i for _, i in new], **kw)
+
+    arts = [a for b in batches for a in b["msg"]["articles"]]
+    stats = {
+        "items": len(arts), "messages": len(batches),
+        "photos": sum(1 for b in batches if b["photo"]),
+        "rss_images": sum(1 for a in arts if a["image"]),
+        "telegram_chunks": sum(len(b["telegram"]) for b in batches),
+        "ignored_seen": ignored_seen,
+    }
+    html_path = out_dir / "preview_telegram.html"
+    slack_path = out_dir / "preview_slack.txt"
+    html_path.write_text(_preview_html(batches, stats, started), encoding="utf-8")
+    slack_path.write_text(_preview_slack(batches, stats, started), encoding="utf-8")
+    return {"html": str(html_path), "slack": str(slack_path), "stats": stats}
+
+
+def _preview_slack(batches, stats, started):
+    out = ["# 슬랙 미리보기 · %s KST · 메시지 %d개 / 기사 %d건%s" % (
+        started.strftime("%Y-%m-%d %H:%M"), stats["messages"], stats["items"],
+        " (새 기사가 없어 이미 본 기사 포함)" if stats["ignored_seen"] else "")]
+    for n, b in enumerate(batches, 1):
+        out.append("\n" + "=" * 70 + "\n[메시지 %d]\n" % n + "=" * 70)
+        out.append(b["slack_text"])
+    return "\n".join(out) + "\n"
+
+
+def _preview_html(batches, stats, started):
+    e = html.escape
+    rows = []
+    for n, b in enumerate(batches, 1):
+        rows.append('<section class="msg"><h2>메시지 %d · %s</h2>' % (n, e(b["msg"]["header"])))
+        if b["photo"]:
+            rows.append('<div class="photo"><div class="lbl">sendPhoto · photo URL</div>'
+                        '<a href="%s">%s</a><img src="%s" alt="">'
+                        '<div class="lbl">caption (%d자)</div><pre>%s</pre><div class="tg">%s</div></div>'
+                        % (e(b["photo"]), e(b["photo"]), e(b["photo"]), telegram.tg_len(b["caption"]),
+                           e(b["caption"]), b["caption"]))
+        else:
+            rows.append('<div class="lbl">사진 없음 (RSS 이미지·og:image 모두 없음)</div>')
+        for c, chunk in enumerate(b["telegram"], 1):
+            rows.append('<div class="chunk"><div class="lbl">sendMessage %d/%d · %d자(UTF-16, 태그 포함)</div>'
+                        '<div class="tg">%s</div><details><summary>HTML 원문</summary><pre>%s</pre></details></div>'
+                        % (c, len(b["telegram"]), telegram.tg_len(chunk), chunk, e(chunk)))
+        rows.append("</section>")
+    return """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>텔레그램 미리보기 — 뉴스 레이더</title>
+<style>
+body{font-family:system-ui,'Malgun Gothic',sans-serif;background:#0e1621;color:#e8eef4;margin:0;padding:16px}
+main{max-width:760px;margin:0 auto}h1{font-size:18px}h2{font-size:15px;color:#8fb8e0}
+.msg{border-top:1px solid #2b3a4a;padding:12px 0}.lbl{font-size:12px;color:#7f93a6;margin:8px 0 4px}
+.tg{background:#182533;border-radius:10px;padding:10px 12px;white-space:pre-wrap;line-height:1.5}
+.tg a{color:#6ab3f3}pre{white-space:pre-wrap;word-break:break-all;background:#0b1118;padding:8px;font-size:12px}
+img{display:block;max-width:100%%;max-height:280px;margin:6px 0;border-radius:8px}.photo a{font-size:12px;color:#6ab3f3;word-break:break-all}
+</style></head><body><main>
+<h1>📰 세력의 정보원 — 텔레그램 미리보기</h1>
+<p>%s KST 생성 · 메시지 %d개 · 기사 %d건 · 텔레그램 전송 단위 %d개 · 사진 %d/%d 메시지 · RSS 이미지 보유 기사 %d/%d%s</p>
+<p class="lbl">전송·seen 등록 없이 만든 파일입니다. 실제 전송은 parse_mode=HTML, disable_web_page_preview=True, message_thread_id=TELEGRAM_TOPIC_NEWS 로 나갑니다.</p>
+%s
+</main></body></html>""" % (started.strftime("%Y-%m-%d %H:%M"), stats["messages"], stats["items"],
+                            stats["telegram_chunks"], stats["photos"], stats["messages"],
+                            stats["rss_images"], stats["items"],
+                            " · <b>새 기사가 없어 이미 본 기사 포함</b>" if stats["ignored_seen"] else "",
+                            "\n".join(rows))

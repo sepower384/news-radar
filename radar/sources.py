@@ -58,6 +58,41 @@ def _parse_date(s):
     return d
 
 
+MRSS = "{http://search.yahoo.com/mrss/}"
+ATOM = "{http://www.w3.org/2005/Atom}"
+_IMG_SRC = re.compile(r"""<img[^>]+src=["']([^"']+)["']""", re.I)
+
+
+def _is_img_url(u):
+    return bool(u) and u.startswith(("http://", "https://"))
+
+
+def rss_image(it, desc_raw=""):
+    """RSS 아이템의 대표 이미지. media:content → media:thumbnail → enclosure → 본문 <img> 순.
+
+    실측(2026-09-15): 코인데스크·코인텔레그래프·더블록은 media:content 100%, 연준·구글뉴스는 0%.
+    """
+    thumb = ""
+    for el in it.iter():
+        tag = el.tag
+        url = (el.get("url") or el.get("href") or "").strip()
+        if not _is_img_url(url):
+            continue
+        typ, medium = (el.get("type") or "").lower(), (el.get("medium") or "").lower()
+        if tag == MRSS + "content":
+            if medium == "image" or typ.startswith("image") or (not typ and not medium):
+                return url
+        elif tag == MRSS + "thumbnail":
+            thumb = thumb or url
+        elif tag == "enclosure" or (tag == ATOM + "link" and el.get("rel") == "enclosure"):
+            if typ.startswith("image"):
+                thumb = thumb or url
+    if thumb:
+        return thumb
+    m = _IMG_SRC.search(desc_raw or "")
+    return m.group(1) if m and _is_img_url(m.group(1)) else ""
+
+
 def parse_rss(xml_bytes, source_name):
     """RSS 2.0 / Atom 모두 처리."""
     out = []
@@ -65,7 +100,7 @@ def parse_rss(xml_bytes, source_name):
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
         return out
-    atom = "{http://www.w3.org/2005/Atom}"
+    atom = ATOM
     nodes = root.findall(".//item") or root.findall(".//" + atom + "entry")
     for it in nodes:
         title = _text(it.find("title")) or _text(it.find(atom + "title"))
@@ -86,8 +121,48 @@ def parse_rss(xml_bytes, source_name):
             "published": _parse_date(pub),
             "source": publisher,
             "feed": source_name,
+            "image": rss_image(it, desc),
         })
     return out
+
+
+# ---------------------------------------------------------------- 기사 대표 이미지(og:image)
+
+# 구글뉴스 기사 링크는 JS 리다이렉트 페이지라 og:image 가 없다(실측 9/9 없음) → 요청 자체를 안 한다.
+# 바이낸스 시세/공지 페이지는 봇 차단(202)·로고뿐이라 역시 생략.
+OG_SKIP_HOSTS = ("news.google.com", "binance.com", "upbit.com")
+_META = re.compile(r"<meta\b[^>]*>", re.I)
+_ATTR = re.compile(r"""([a-zA-Z:_-]+)\s*=\s*["']([^"']*)["']""")
+# 사이트 공용 기본 이미지(연준 social-default, 업비트 facebook 로고 등)는 기사 사진이 아니다
+_GENERIC_IMG = re.compile(r"default|logo|favicon|placeholder|facebook\.png|/seo/", re.I)
+
+
+def fetch_og_image(url, timeout=6):
+    """기사 원문의 og:image / twitter:image. 실패·시간초과·기본로고면 ''."""
+    host = urllib.parse.urlparse(url or "").netloc.lower()
+    if not host or any(host == h or host.endswith("." + h) for h in OG_SKIP_HOSTS):
+        return ""
+    try:
+        r = _get(url, timeout=timeout)
+        if r.status_code != 200:
+            return ""
+        page = r.text[:400000]
+    except Exception:
+        return ""
+    found = {}
+    for tag in _META.findall(page):
+        attrs = {k.lower(): v for k, v in _ATTR.findall(tag)}
+        key = (attrs.get("property") or attrs.get("name") or "").lower()
+        if key in ("og:image", "og:image:url", "og:image:secure_url", "twitter:image") and attrs.get("content"):
+            found.setdefault(key, attrs["content"].strip())
+    for key in ("og:image:secure_url", "og:image", "og:image:url", "twitter:image"):
+        img = found.get(key)
+        if not img:
+            continue
+        img = urllib.parse.urljoin(r.url or url, img)
+        if _is_img_url(img) and not _GENERIC_IMG.search(img):
+            return img
+    return ""
 
 
 def _fresh(items, hours):

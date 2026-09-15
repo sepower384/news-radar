@@ -18,7 +18,7 @@ jobs:
           cache: 'pip'
       - run: pip install -r requirements.txt
 
-      - name: 자체검증 (오프라인 70개)
+      - name: 자체검증 (오프라인)
         env: { PYTHONUTF8: '1' }
         run: python tests/test_all.py
 
@@ -33,5 +33,8 @@ jobs:
           fi
           if git grep -nIE 'hooks\.slack\.com/services/[A-Z0-9]' -- ':!*.md' ':!*.yml'; then
             echo "::error::슬랙 웹훅 주소가 소스에 박혀 있다"; exit 1
+          fi
+          if git grep -nIE '[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}' -- ':!*.md' ':!*.yml'; then
+            echo "::error::텔레그램 봇 토큰이 소스에 박혀 있다"; exit 1
           fi
           echo "secrets 검사 통과"
