@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """한 사이클: 수집 → 스코어 → 중복제거 → 가격감시 → 문지기 → 슬랙·텔레그램."""
+import hashlib
 import html
 from datetime import datetime
 
-from radar import notify, score, sources, store, telegram
+from radar import cluster, notify, score, sources, store, telegram
 from radar.config import DATA_DIR, KST, in_quiet_hours, load_config
 
 OUTBOX = DATA_DIR / "outbox"
@@ -74,10 +75,65 @@ def _gather(cfg, mode, dry, log, res):
     return candidates
 
 
-def _select(cfg, candidates, started, log, res, ignore_seen=False):
-    """중복제거 → 조용시간 → 토픽 상한 → 전체 상한. (new, dropped) 반환."""
+def translate_all(items, translate, limit=40, log=print):
+    """상위 기사 제목을 한국어로(사건 묶기용). 번역은 DB에 캐시해 같은 제목을 두 번 부르지 않는다."""
+    n = 0
+    for it in items[:limit]:
+        if it.get("title_ko") or it.get("feed") == "price":
+            continue
+        t = it.get("title", "")
+        ck = "tr:" + hashlib.sha1(t.encode("utf-8", "ignore")).hexdigest()
+        ko = store.get_state(ck)
+        if ko is None:
+            ko = translate(t) or t
+            n += 1
+            if ko != t:
+                store.set_state(ck, ko)
+        it["title_ko"] = ko
+    if n:
+        log("  제목 번역 %d건" % n)
+
+
+def dedupe_events(cfg, new, log=print):
+    """같은 사건 묶기(이번 턴) + 최근 보낸 사건 거르기(지난 턴들). (남길 것, 접을 것) 반환."""
+    items = [i for _, i in new]
+    key_of = {id(i): k for k, i in new}
+    kept, dropped = [], []
+    for rep, dupes in cluster.group(items):
+        srcs = []
+        for d in dupes:
+            if d.get("source") and d["source"] != rep.get("source") and d["source"] not in srcs:
+                srcs.append(d["source"])
+        rep["also"] = srcs
+        # 여러 매체가 동시에 쓰면 큰 사건일 확률이 높다
+        rep["score"] = min(100, rep["score"] + min(len(srcs), 3) * 3)
+        kept.append((key_of[id(rep)], rep))
+        dropped += [(key_of[id(d)], d) for d in dupes]
+    if len(kept) < len(items):
+        log("  같은 사건 묶기 %d → %d건" % (len(items), len(kept)))
+
+    hours = cfg.get("repeat_block_hours", 18)
+    recent = [(ko + cluster.SEP + t) if ko and ko != t else t for ko, t in store.recent_sent(hours)]
+    if recent:
+        fresh = []
+        for k, i in kept:
+            if i.get("feed") != "price" and cluster.seen_recently(cluster.key_of(i), recent):
+                dropped.append((k, i))
+            else:
+                fresh.append((k, i))
+        if len(fresh) < len(kept):
+            log("  최근 %d시간 안에 보낸 사건 %d건 거름" % (hours, len(kept) - len(fresh)))
+        kept = fresh
+    kept.sort(key=lambda kv: kv[1]["score"], reverse=True)
+    return kept, dropped
+
+
+def _select(cfg, candidates, started, log, res, ignore_seen=False, translate=None):
+    """중복제거 → 번역 → 같은 사건 묶기 → 조용시간 → 토픽 상한 → 전체 상한. (new, dropped) 반환."""
     new = _pick_new(candidates, set(), ignore_seen=ignore_seen)
     new.sort(key=lambda kv: kv[1]["score"], reverse=True)
+    translate_all([i for _, i in new], translate or notify._ko, log=log)
+    new, dup_dropped = dedupe_events(cfg, new, log=log)
 
     urgent_score = cfg.get("urgent_score", 85)
     if in_quiet_hours(cfg, started):
@@ -98,7 +154,7 @@ def _select(cfg, candidates, started, log, res, ignore_seen=False):
     new = kept
 
     cap = cfg.get("max_items_per_run", 12)
-    dropped = overflow + new[cap:]
+    dropped = dup_dropped + overflow + new[cap:]
     new = new[:cap]
     res["picked"] = len(new)
     res["items"] = [{"score": i["score"], "topic": i.get("topic", ""),
@@ -114,6 +170,13 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
     res = _new_result(mode, dry, started)
     candidates = _gather(cfg, mode, dry, log, res)
     new, dropped = _select(cfg, candidates, started, log, res)
+
+    if not dry and mode in ("all", "news"):
+        try:
+            from radar import kol
+            kol.maybe_send(cfg, started, log=log)
+        except Exception as e:  # 코너가 실패해도 뉴스 알림은 나간다
+            log("  KOL 코너 실패(건너뜀): %s" % e)
 
     if dry:
         log("  [dry-run] 전송 안 함 — 통과 %d건" % len(new))
@@ -178,12 +241,12 @@ def preview(cfg=None, log=print, out_dir=None, fetch_og=None, translate=None):
     started = datetime.now(KST)
     res = _new_result("all", True, started)
     candidates = _gather(cfg, "all", True, log, res)
-    new, _ = _select(cfg, candidates, started, log, res)
+    new, _ = _select(cfg, candidates, started, log, res, translate=translate)
     ignored_seen = False
     if not new and candidates:
         ignored_seen = True
         log("  새 기사가 없어 이미 본 기사까지 포함해 미리보기를 만듭니다")
-        new, _ = _select(cfg, candidates, started, log, res, ignore_seen=True)
+        new, _ = _select(cfg, candidates, started, log, res, ignore_seen=True, translate=translate)
 
     kw = {"with_photo": True, "fetch_og": fetch_og}
     if translate:

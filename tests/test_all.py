@@ -74,15 +74,15 @@ def test_parser():
 def test_score():
     print("\n[스코어]")
     topics = CFG["topics"]
-    t, hits, w = score.match_topic(item("연준 기준금리 인하 발표"), topics)
+    t, hits, w, _ = score.match_topic(item("연준 기준금리 인하 발표"), topics)
     check("금리 토픽 매칭", t == "금리·통화정책", t)
-    t2, _, _ = score.match_topic(item("Zcash ZEC 급등"), topics)
+    t2, _, _, _ = score.match_topic(item("Zcash ZEC 급등"), topics)
     check("ZEC 토픽 매칭", t2 == "지캐시(ZEC)", t2)
-    t3, _, _ = score.match_topic(item("오늘 점심 메뉴 추천"), topics)
+    t3, _, _, _ = score.match_topic(item("오늘 점심 메뉴 추천"), topics)
     check("무관 기사 탈락", t3 is None, t3)
 
     # 짧은 영문 티커는 단어경계로만 — hyperactive 같은 단어에 오탐 금지
-    t4, _, _ = score.match_topic(item("Hyperactive kids study"), topics)
+    t4, _, _, _ = score.match_topic(item("Hyperactive kids study"), topics)
     check("hype 오탐 방지", t4 != "하이퍼리퀴드(HYPE)", t4)
 
     big = score.score_item(item("[속보] 연준 기준금리 0.5%p 전격 인하", source="연준(Fed) 공식",
@@ -267,7 +267,7 @@ def test_config_and_cycle():
         res2 = runner.cycle("news", dry=True, log=lambda m: None, cfg=cfg2)
     finally:
         sources.collect = orig2
-    check("토픽 상한 적용", res2["picked"] == 3, res2["picked"])
+    check("같은 사건 묶기로 1건만", res2["picked"] == 1, res2["picked"])
     check("상한 안에서 고득점 우선",
           res2["items"] == sorted(res2["items"], key=lambda i: -i["score"]))
 
@@ -467,7 +467,22 @@ def test_tone_and_glossary():
     tg_all = "\n".join(msgs[-1]["telegram"])
     check("다이제스트 안에서 ETF 풀이 1회", tg_all.count("주식처럼 거래소에서 사고파는 펀드") == 1,
           tg_all.count("주식처럼 거래소에서 사고파는 펀드"))
-    check("타이틀 이모지", msgs[0]["msg"]["header"].startswith("🚨") and msgs[-1]["msg"]["header"].startswith("📰"))
+    check("한 턴은 메시지 1개", len(msgs) == 1, len(msgs))
+    check("긴급 있으면 🚨 제목", msgs[0]["msg"]["header"].startswith("🚨"), msgs[0]["msg"]["header"])
+    calm = notify.batches_of([dict(i, score=70) for i in _fake_items()], 85)
+    check("긴급 없으면 📰 제목", len(calm) == 1 and calm[0][1].startswith("📰"), calm[0][1])
+    many = notify.compose([dict(i, score=95) for i in _fake_items()[:4]], 85, "h", translate=lambda t: t)
+    check("긴급 표시는 최대 2건", [a["tier"] for a in many["articles"]] == ["긴급", "긴급", "중요", "중요"],
+          [a["tier"] for a in many["articles"]])
+    it = dict(_fake_items()[0], title="업비트 상장하자마자 197% 폭등", topic="코인 전반·규제")
+    check("제목 맞춤 이유(상장)", "상장 직후" in notify.why_for(it, it["topic"]))
+    it2 = dict(it, title="英 기준금리 동결", topic="금리·통화정책")
+    check("제목 맞춤 이유(동결)", "다음 회의" in notify.why_for(it2, it2["topic"]))
+    z = notify.compose([dict(_fake_items()[0], topic="지캐시(ZEC)", also=["블루밍비트", "코인데스크"])], 85, "h",
+                       translate=lambda t: t, prices={"ZECUSDT": {"price": 1366.2, "pct24h": 12.04}})["articles"][0]
+    check("코인 현재가 줄", z["price"] == "📊 지금 지캐시 $1,366 (24시간 +12.0%)", z["price"])
+    check("같은 소식 매체 수 줄", notify.also_line(z) == "🗞️ 같은 소식을 2곳이 더 보도했습니다(블루밍비트, 코인데스크).")
+    check("시세 실패해도 빈 dict", notify.coin_prices([{"topic": "비트코인"}], fetch=lambda s: 1 / 0) == {})
     check("텔레그램에 슬랙 문법 없음", "*<" not in tg_all and "|" not in tg_all.split("href")[0])
 
 
@@ -565,14 +580,14 @@ def test_delivery_and_seen():
             return res, store.is_new(keys), keys, sent
 
         res, fresh, keys, sent = run(True, False)
-        check("텔레그램 실패해도 슬랙은 나감", sent["slack"] == 2 and res["sent"] == 2, (sent, res["sent"]))
+        check("텔레그램 실패해도 슬랙은 나감", sent["slack"] == 1 and res["sent"] == 2, (sent, res["sent"]))
         check("한쪽 성공이면 seen 등록(중복폭탄 방지)", fresh == set(), fresh)
         check("실패 채널은 channel_errors 로 남김", any(e.startswith("telegram") for e in res["channel_errors"])
               and res["error"] is None, res)
 
         store.DB_PATH = os.path.join(tempfile.mkdtemp(), "d2.db")
         res, fresh, keys, sent = run(False, True)
-        check("슬랙 실패해도 텔레그램은 나감", sent["tg"] == 2 and fresh == set(), (sent, fresh))
+        check("슬랙 실패해도 텔레그램은 나감", sent["tg"] == 1 and fresh == set(), (sent, fresh))
 
         store.DB_PATH = os.path.join(tempfile.mkdtemp(), "d3.db")
         res, fresh, keys, sent = run(False, False)
@@ -581,7 +596,7 @@ def test_delivery_and_seen():
 
         store.DB_PATH = os.path.join(tempfile.mkdtemp(), "d4.db")
         res, fresh, keys, sent = run(True, True, env=False)
-        check("텔레그램 변수 없으면 슬랙만", sent == {"slack": 2, "tg": 0} and res["channels"] == ["slack"], sent)
+        check("텔레그램 변수 없으면 슬랙만", sent == {"slack": 1, "tg": 0} and res["channels"] == ["slack"], sent)
 
         notify._send_slack = o_slack
         try:
@@ -642,6 +657,143 @@ def test_live():
     check("연준 RSS", len(sources.simple_rss(*sources.RSS_FEEDS["fed"])) > 0)
 
 
+# --------------------------------- 같은 사건 묶기 ---------------------------------
+def test_cluster():
+    print("\n[같은 사건 묶기]")
+    from radar import cluster as C, runner
+    same = [("업비트 상장하자마자 197% 폭등…스테이블코인에 무슨 일이", "업비트서 스테이블코인 상장 직후 190%대 이례적 급등"),
+            ("[속보] 英 기준금리 동결…3.75% 유지", "영국, 금리 3.75%로 동결‥BOE 총재 \"금리 인상 가능성\""),
+            ("美 금리 인상에 3.4억弗 청산…지캐시 '나홀로 급등'", "[D-BIZ] 연준 금리 인상 속 ZEC 23% 급등"),
+            ("실시간 업데이트: Zcash 17% 증가" + C.SEP + "Live updates: Zcash jumps 17% as liquidations hit",
+             "지캐시 23% 껑충")]
+    for a, b in same:
+        check("같은 사건: %s" % a[:18], C.same_event(a, b), (a, b))
+    diff = [("[속보] 英 기준금리 동결…3.75% 유지", "미 연준, 기준금리 0.25%p 인상…연내 추가 인상 예고"),
+            ("美 금리 인상에 3.4억弗 청산…지캐시 '나홀로 급등'", "연준 금리 인상 여파에 미국 10년물 국채금리 하락"),
+            ("업비트 BTT 상장", "업비트 BTT 상장폐지 결정"),
+            ("국가 해커들이 온체인 악성 코드를 420% 급증", "중동전쟁 격화에 국제 유가 치솟아")]
+    for a, b in diff:
+        check("다른 사건: %s / %s" % (a[:12], b[:12]), not C.same_event(a, b), (a, b))
+
+    # 이번 턴 묶기 + 최근 보낸 사건 거르기
+    old_db = store.DB_PATH
+    store.DB_PATH = os.path.join(tempfile.mkdtemp(), "c.db")
+    try:
+        its = [dict(item("업비트 상장 JPYC 190%대 급등", source="EBN"), score=80),
+               dict(item("업비트서 스테이블코인 상장 직후 190%대 이례적 급등", source="다음"), score=70),
+               dict(item("업비트 상장하자마자 197% 폭등", source="매경"), score=72),
+               dict(item("英 기준금리 3.75% 동결", source="머니투데이"), score=75)]
+        new = [(store.norm_key(i["title"], i["url"]), i) for i in its]
+        kept, dropped = runner.dedupe_events(CFG, new, log=lambda m: None)
+        check("3건 → 1묶음 + 영국 1건", len(kept) == 2 and len(dropped) == 2, (len(kept), len(dropped)))
+        check("대표에 다른 매체 목록", kept[0][1]["also"] == ["다음", "매경"], kept[0][1].get("also"))
+        check("여러 매체 보도 가산점", kept[0][1]["score"] == 86, kept[0][1]["score"])
+        store.log_sent([kept[0][1]])
+        again = [(store.norm_key("업비트 JPYC 상장 직후 급등 이유", "u9"),
+                  dict(item("업비트 JPYC 상장 직후 급등 이유"), score=90))]
+        k2, d2 = runner.dedupe_events(CFG, again, log=lambda m: None)
+        check("최근 보낸 사건은 다음 턴에 거름", not k2 and len(d2) == 1, (k2, d2))
+        other = [(store.norm_key("비트코인 현물 ETF 사상 최대 유입", "u8"),
+                  dict(item("비트코인 현물 ETF 사상 최대 유입"), score=90))]
+        check("다른 사건은 통과", len(runner.dedupe_events(CFG, other, log=lambda m: None)[0]) == 1)
+        calls = []
+        tr = [dict(item("Fed holds rates"), score=70)]
+        runner.translate_all(tr, lambda t: calls.append(t) or "연준 금리 동결", log=lambda m: None)
+        runner.translate_all([dict(item("Fed holds rates"), score=70)], lambda t: calls.append(t) or "x",
+                             log=lambda m: None)
+        check("번역은 캐시(같은 제목 1회만 호출)", len(calls) == 1 and tr[0]["title_ko"] == "연준 금리 동결", calls)
+    finally:
+        store.DB_PATH = old_db
+
+    # 제목에 주제어 없는 기사는 긴급 불가
+    hack = item("State hackers drive 420% surge in onchain malware, Chainalysis finds",
+                summary="North Korea and Iran linked groups ... war ... strike", source="Cointelegraph",
+                feed="cointelegraph", age_h=0.2)
+    r = score.score_item(hack, CFG)
+    check("본문에만 '이란'인 해커 기사는 긴급 아님", r is None or r["score"] < CFG["urgent_score"], r and r["score"])
+    check("software 에 war 안 걸림", not score.kw_in("war", "new software release"))
+    check("hacks 는 hack 으로 걸림", score.kw_in("hack", "exchange hacks rise"))
+
+
+# --------------------------------- KOL 코너 ---------------------------------
+def test_kol():
+    print("\n[KOL 코너]")
+    from radar import kol
+    protos = [
+        {"name": "Hyperliquid Perps", "slug": "hyperliquid-perps", "category": "Derivatives",
+         "total30d": 6e7, "total60dto30d": 3e7, "change_1m": 86},
+        {"name": "Hyperliquid Spot", "slug": "hyperliquid-spot", "category": "Derivatives",
+         "total30d": 5e6, "total60dto30d": 4e6, "change_1m": 10},
+        {"name": "fomo", "slug": "fomo-wallet", "category": "Trading App", "total30d": 2.7e7,
+         "total60dto30d": 2.8e7, "change_1m": -3},
+        {"name": "Tether", "slug": "tether", "category": "Stablecoin Issuer", "total30d": 4e8, "total60dto30d": 4e8},
+        {"name": "NewPad", "slug": "newpad", "category": "Launchpad", "total30d": 2e6, "total60dto30d": 1e4,
+         "change_1m": 9000},
+        {"name": "NewPad2", "slug": "newpad2", "category": "Launchpad", "total30d": 3e6, "total60dto30d": 1e4,
+         "change_1m": 5000},
+        {"name": "NewDex", "slug": "newdex", "category": "Dexs", "total30d": 1.5e6, "total60dto30d": 1e5,
+         "change_1m": 800},
+        {"name": "Bets", "slug": "bets", "category": "Prediction Market", "total30d": 9e6, "total60dto30d": 1e6,
+         "change_1m": 900},
+        {"name": "Tiny", "slug": "tiny", "category": "Dexs", "total30d": 2e5, "total60dto30d": 1e5},
+    ]
+    top, rising = kol.pick_projects(protos)
+    names = [r["name"] for r in top]
+    check("레퍼럴 확인된 곳이 먼저", names[0] == "Hyperliquid Perps", names)
+    check("같은 회사 상품은 하나만", "Hyperliquid Spot" not in names, names)
+    check("스테이블코인 발행사·소규모 제외", "Tether" not in names and "Tiny" not in names, names)
+    rn = [r["name"] for r in rising]
+    check("급성장은 분류당 1개 먼저 + 예측시장 제외", rn[:2] == ["NewPad", "NewDex"] and "Bets" not in rn, rn)
+    text = kol.project_lines(rising[0], rising=True)
+    check("신생은 검증 전 경고", "직접 써 보고" in text and "밈코인" in text, text)
+    check("미확인 레퍼럴은 확인 필요 표시", "확인되지 않았습니다" in kol.project_lines(top[1]))
+    news = [{"title": "Kalshi Promo Code COVERS35 for $35 bonus", "source": "Covers.com"},
+            {"title": "룰렛 오락 심층 분석", "source": "Histoire pour tous"},
+            {"title": "Vectra AI launches partner program", "source": "IT Pro"},
+            {"title": "Hedera ambassador program expands", "source": "Coinfomania"},
+            {"title": "Polymarket 초대 코드 SBWIRE: $50 보너스", "source": "Sportsbook Wire"}]
+    kept = kol._clean(news, kol.NEWS_SECTIONS[0]["must"], crypto_only=True)
+    check("광고·도박·비코인 기사 제거", [k["title"] for k in kept] == ["Hedera ambassador program expands"], kept)
+
+    old_db = store.DB_PATH
+    store.DB_PATH = os.path.join(tempfile.mkdtemp(), "k.db")
+    try:
+        now = datetime(2026, 9, 17, 9, 30, tzinfo=config.KST)
+        check("10시 전엔 안 보냄", not kol.due(CFG, now))
+        check("10시 이후 첫 턴에 보냄", kol.due(CFG, now.replace(hour=10)))
+        n = {"title": "Hedera ambassador program expands in Asia", "source": "Coinfomania",
+             "url": "https://h.test/1", "published": datetime.now(UTC)}
+        fake_news = lambda q, lang: [dict(n)] if "ambassador" in q else []
+        sent = []
+        o_send = kol.send
+        kol.send = lambda cfg, blocks, log=print: sent.append(blocks) or True
+        try:
+            ok = kol.maybe_send(CFG, now.replace(hour=11), log=lambda m: None, translate=lambda t: t,
+                                fetch_fees_fn=lambda: protos, fetch_news=fake_news)
+            check("발송", ok and len(sent) == 1)
+            body = "\n".join(sent[0])
+            check("본문에 프로젝트·소식·체크리스트", "Hyperliquid Perps" in body and "Hedera" in body
+                  and "광고·제휴 링크" in body, body[:200])
+            check("링크는 DefiLlama 페이지", "https://defillama.com/protocol/hyperliquid-perps" in body)
+            check("하루 한 번만", not kol.due(CFG, now.replace(hour=15)))
+            check("다음 날 다시", kol.due(CFG, now + timedelta(days=1, hours=1)))
+            kol.maybe_send(CFG, now + timedelta(days=1, hours=1), log=lambda m: None, translate=lambda t: t,
+                           fetch_fees_fn=lambda: protos, fetch_news=fake_news)
+            check("보낸 소식은 다음 날 반복 안 함", "Hedera" not in "\n".join(sent[-1]))
+            ok2 = kol.maybe_send(CFG, now.replace(hour=12), force=True, log=lambda m: None,
+                                 translate=lambda t: t, fetch_fees_fn=lambda: 1 / 0, fetch_news=lambda q, l: [])
+            check("데이터 전부 실패면 안 보냄", ok2 is False)
+        finally:
+            kol.send = o_send
+        from radar import telegram as tg
+        chunks = tg.split_html(kol.build(*kol.pick_projects(protos), [("🆕 x", [])]))
+        check("텔레그램 한도 안", all(tg.tg_len(c) <= 4096 for c in chunks))
+        text = "\n".join(chunks)
+        check("KOL 코너 해요체 없음", not HAEYO.search(text), HAEYO.findall(text)[:3])
+    finally:
+        store.DB_PATH = old_db
+
+
 def main():
     test_parser()
     test_score()
@@ -655,6 +807,8 @@ def main():
     test_delivery_and_seen()
     test_preview()
     test_single_instance()
+    test_cluster()
+    test_kol()
     if "--live" in sys.argv:
         test_live()
     print("\n%s\n결과: %d PASS / %d FAIL\n%s" % ("=" * 46, PASS, FAIL, "=" * 46))

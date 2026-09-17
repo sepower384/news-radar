@@ -13,7 +13,7 @@ import requests
 from radar import glossary, telegram
 
 KST = timezone(timedelta(hours=9))
-BOT_NAME = "세력의 비서실장"
+BOT_NAME = "세력의 주요정보원"
 
 TOPIC_EMOJI = {
     "금리·통화정책": "🏦",
@@ -43,9 +43,43 @@ TOPIC_WHY = {
     "가격 급변": "짧은 시간에 가격이 크게 움직였기 때문입니다. 원인이 된 뉴스를 함께 확인해 보시는 것이 좋아 보입니다.",
     "코인 급등락 스캔": "시장 전체에서 유독 크게 움직인 코인이라 이유를 살펴볼 만하기 때문입니다.",
 }
+# 기사 제목에 걸린 단어로 '왜 중요한가'를 더 구체적으로 — 위에서부터 먼저 걸리는 것 하나만 쓴다.
+# (단어들, 적용 토픽(None=전체), 문장)
+SPECIFIC_WHY = [
+    (("상장폐지", "delist", "거래지원 종료", "유의종목"), None,
+     "거래소에서 빠지면 사고팔 곳이 줄어 가격이 크게 흔들리기 때문입니다."),
+    (("해킹", "hack", "exploit", "탈취", "drain"), None,
+     "해킹·자금 유출은 해당 코인과 거래소에 대한 불안으로 번져 가격이 빠르게 빠지기 쉽기 때문입니다."),
+    (("상장", "listing", "lists "), None,
+     "거래소 상장 직후에는 매수가 몰려 단기 가격이 크게 튀었다가 되돌리기 쉽기 때문입니다."),
+    (("청산", "liquidat"), None,
+     "대규모 강제청산은 가격 급변을 더 키우는 연쇄 반응을 일으키기 때문입니다."),
+    (("etf",), ("비트코인", "코인 전반·규제"),
+     "ETF 자금 흐름은 기관 돈이 들어오고 나가는 창구라 가격 방향에 직접 영향을 주기 때문입니다."),
+    (("동결", "hold"), ("금리·통화정책",),
+     "금리가 그대로여도 다음 회의에서 올릴지 내릴지에 대한 힌트가 시장 방향을 정하기 때문입니다."),
+    (("인상", "hike", "긴축"), ("금리·통화정책", "호르무즈·지정학"),
+     "금리가 오르면 돈이 위험자산에서 빠져나가기 쉬워 주식·코인에 부담이 되기 때문입니다."),
+    (("인하", "rate cut", "완화"), ("금리·통화정책",),
+     "금리가 내리면 시중에 돈이 풀려 주식·코인에 우호적인 경우가 많기 때문입니다."),
+    (("cpi", "물가", "inflation", "인플레", "ppi"), None,
+     "물가 지표는 다음 금리 결정을 가늠하는 핵심 단서라 시장이 크게 반응하기 때문입니다."),
+    (("관세", "tariff"), None,
+     "관세는 기업 이익과 물가를 동시에 건드려 주식·코인이 함께 흔들리기 쉽기 때문입니다."),
+    (("유가", "oil", "원유", "opec"), None,
+     "유가가 뛰면 물가와 금리 부담이 커져 위험자산이 약해지기 쉽기 때문입니다."),
+    (("sec", "cftc", "규제", "regulat", "법안", "clarity", "클래리티"), ("코인 전반·규제", "비트코인"),
+     "규제 소식은 코인 가격에 크고 빠르게 반영되기 때문입니다."),
+]
+MAX_URGENT = 2  # 한 턴에 '긴급' 표시는 최대 2건 — 전부 긴급이면 아무것도 긴급이 아니다
 INTRO_URGENT = "방금 들어온 중요한 뉴스라 바로 알려드립니다."
-INTRO_DIGEST = "지난 알림 이후 들어온 뉴스 중 챙겨 보실 만한 것만 골랐습니다. 제목을 누르시면 기사로 이동합니다."
-FOOTER = "뉴스 레이더 · %s 기준 · 중요도는 주제·키워드·출처를 바탕으로 매긴 점수입니다."
+INTRO_DIGEST = ("같은 사건은 하나로 묶고, 지난 알림 이후 챙겨 보실 만한 것만 골랐습니다. "
+                "제목을 누르시면 기사로 이동합니다.")
+FOOTER = "%s 기준 · 중요도는 주제·키워드·출처·보도 매체 수를 바탕으로 매긴 점수입니다."
+
+# 코인 토픽이면 지금 가격을 한 줄 붙인다
+TOPIC_COIN = {"비트코인": ("BTCUSDT", "비트코인"), "지캐시(ZEC)": ("ZECUSDT", "지캐시"),
+              "하이퍼리퀴드(HYPE)": ("HYPEUSDT", "하이퍼리퀴드")}
 
 _HANGUL = re.compile(r"[가-힣]")
 
@@ -63,6 +97,33 @@ def _ko(text):
         return text
 
 
+def why_for(item, topic):
+    """제목에 걸린 단어로 고른 이유 한 줄. 안 걸리면 토픽 기본 문장."""
+    hay = " ".join([(item.get("title_ko") or ""), (item.get("title") or "")]).lower()
+    for words, topics, text in SPECIFIC_WHY:
+        if topics and topic not in topics:
+            continue
+        if any(w in hay for w in words):
+            return text
+    if topic == "코인 전반·규제":
+        return "코인 시장 전체 분위기에 영향을 줄 수 있는 소식이기 때문입니다."
+    return TOPIC_WHY.get(topic, "")
+
+
+def _fmt_px(p):
+    if p >= 1000:
+        return "${:,.0f}".format(p)
+    return "${:,.2f}".format(p) if p >= 1 else "${:.4f}".format(p)
+
+
+def price_line(topic, prices):
+    ref = TOPIC_COIN.get(topic)
+    row = prices.get(ref[0]) if ref and prices else None
+    if not row or not row.get("price"):
+        return ""
+    return "📊 지금 %s %s (24시간 %+.1f%%)" % (ref[1], _fmt_px(row["price"]), row.get("pct24h") or 0)
+
+
 def _tier(score, urgent_score):
     if score >= urgent_score:
         return "🚨", "긴급"
@@ -72,26 +133,36 @@ def _tier(score, urgent_score):
 
 
 def batches_of(items, urgent_score):
-    """긴급건은 한 건씩 따로, 나머지는 한 방에 묶어 다이제스트로."""
-    urgent = [i for i in items if i["score"] >= urgent_score]
-    rest = [i for i in items if i["score"] < urgent_score]
-    out = [([u], "🚨 긴급 뉴스 — %s" % u.get("topic", "")) for u in urgent]
-    if rest:
-        out.append((rest, "📰 챙겨 보실 뉴스 %d건" % len(rest)))
-    return out
+    """한 턴 = 메시지 1개(알림도 한 번). 긴급건이 있으면 맨 위에 둔다."""
+    if not items:
+        return []
+    items = sorted(items, key=lambda i: -i["score"])
+    if items[0]["score"] >= urgent_score:
+        header = "🚨 긴급 — %s" % items[0].get("topic", "")
+        if len(items) > 1:
+            header += " 외 %d건" % (len(items) - 1)
+    else:
+        header = "📰 챙겨 보실 뉴스 %d건" % len(items)
+    return [(items, header)]
 
 
 # ─────────────────────────────────────────────────────────── 조립(채널 공통)
 
-def compose(items, urgent_score, header, translate=_ko, now=None):
+def compose(items, urgent_score, header, translate=_ko, now=None, prices=None):
     """번역과 용어 풀이는 여기서 한 번만 한다 — 슬랙과 텔레그램이 같은 문장을 받는다."""
     used = set()  # 한 메시지 안에서 같은 용어는 한 번만 풀이
     arts = []
+    urgent_left = MAX_URGENT
     for it in items:
-        ko = translate(it["title"]) or it["title"]
+        ko = it.get("title_ko") or translate(it["title"]) or it["title"]
         topic = it.get("topic", "")
-        why = TOPIC_WHY.get(topic, "")
+        why = why_for(dict(it, title_ko=ko), topic)
         emoji, tier = _tier(it["score"], urgent_score)
+        if tier == "긴급":
+            if urgent_left > 0:
+                urgent_left -= 1
+            else:
+                emoji, tier = "⚠️", "중요"
         pub = it.get("published")
         arts.append({
             "tier_emoji": emoji, "tier": tier,
@@ -106,11 +177,21 @@ def compose(items, urgent_score, header, translate=_ko, now=None):
             "score": int(it["score"]),
             "image": it.get("image", "") or "",
             "feed": it.get("feed", ""),
+            "also": list(it.get("also") or []),
+            "price": price_line(topic, prices),
         })
     single_urgent = len(items) == 1 and items[0]["score"] >= urgent_score
     stamp = (now or datetime.now(KST)).strftime("%m월 %d일 %H:%M")
     return {"header": header, "intro": INTRO_URGENT if single_urgent else INTRO_DIGEST,
             "articles": arts, "footer": FOOTER % stamp}
+
+
+def also_line(a):
+    names = a.get("also") or []
+    if not names:
+        return ""
+    shown = ", ".join(names[:3]) + (" 등" if len(names) > 3 else "")
+    return "🗞️ 같은 소식을 %d곳이 더 보도했습니다(%s)." % (len(names), shown)
 
 
 def _meta(a):
@@ -136,6 +217,9 @@ def slack_section(a):
         lines.append("_원제: %s_" % _sesc(a["original"]))
     if a["why"]:
         lines.append("%s %s" % (WHY_LABEL, _sesc(a["why"])))
+    for extra in (a.get("price"), also_line(a)):
+        if extra:
+            lines.append(_sesc(extra))
     lines.append(_meta(a))
     return "\n".join(lines)
 
@@ -231,6 +315,9 @@ def telegram_blocks(msg):
             lines.append("<i>원제: %s</i>" % e(a["original"]))
         if a["why"]:
             lines.append("%s %s" % (WHY_LABEL, e(a["why"])))
+        for extra in (a.get("price"), also_line(a)):
+            if extra:
+                lines.append(e(extra))
         lines.append(e(_meta(a)))
         blocks.append("\n".join(lines))
     blocks.append("<i>%s · %s</i>" % (BOT_NAME, e(msg["footer"])))
@@ -275,14 +362,29 @@ def pick_photo(msg, fetch_og=None):
 
 # ─────────────────────────────────────────────────────────── 출고
 
-def render_batches(cfg, items, with_photo=True, fetch_og=None, translate=_ko):
+def coin_prices(items, fetch=None):
+    """코인 토픽 기사가 있을 때만 시세를 한 번 받아 온다. 실패하면 빈 dict."""
+    syms = sorted({TOPIC_COIN[i.get("topic")][0] for i in items if i.get("topic") in TOPIC_COIN})
+    if not syms:
+        return {}
+    try:
+        if fetch is None:
+            from radar.sources import binance_tickers as fetch
+        return fetch(syms)[0]
+    except Exception:
+        return {}
+
+
+def render_batches(cfg, items, with_photo=True, fetch_og=None, translate=_ko, prices=None):
     """실제 전송과 미리보기가 똑같은 결과물을 쓰도록 여기서 한 번에 만든다."""
     if fetch_og is None and with_photo:
         from radar.sources import fetch_og_image as fetch_og
     urgent_score = cfg.get("urgent_score", 85)
+    if prices is None:
+        prices = coin_prices(items) if with_photo else {}
     out = []
     for batch, header in batches_of(items, urgent_score):
-        msg = compose(batch, urgent_score, header, translate=translate)
+        msg = compose(batch, urgent_score, header, translate=translate, prices=prices)
         photo, caption = pick_photo(msg, fetch_og) if with_photo else ("", "")
         out.append({"items": batch, "msg": msg, "slack_blocks": render_slack(msg),
                     "slack_text": slack_preview_text(msg), "telegram": render_telegram(msg),

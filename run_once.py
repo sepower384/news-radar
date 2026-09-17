@@ -7,6 +7,8 @@
     python run_once.py dry                # 수집·채점만 하고 전송/기록 없음 (안전 미리보기)
     python run_once.py preview-telegram   # 실제 데이터로 슬랙·텔레그램 메시지를 파일로만 저장
     python run_once.py test               # 슬랙·텔레그램 연결 테스트 1발
+    python run_once.py kol                # 💼 세력 수익 레이더(KOL 코너) 지금 바로 발송
+    python run_once.py preview-kol        # KOL 코너를 파일로만 저장(전송 X)
 """
 import json
 import os
@@ -30,6 +32,17 @@ def main():
             print("전송 실패: %s" % e)
             return 1
         print("전송 성공 (경로: %s)" % b)
+        return 0
+
+    if arg in ("kol", "preview-kol"):
+        from radar import kol
+        if arg == "kol":
+            return 0 if kol.maybe_send(cfg, force=True) else 1
+        top, rising, news = kol.collect()
+        out = runner.OUTBOX / "preview_kol.html"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(kol.preview_html(kol.build(top, rising, news)), encoding="utf-8")
+        print("KOL 코너 미리보기: %s" % out)
         return 0
 
     if arg in ("preview-telegram", "preview"):

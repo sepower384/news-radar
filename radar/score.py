@@ -22,58 +22,76 @@ def _hay(item):
     return ("%s %s" % (item.get("title", ""), item.get("summary", ""))).lower()
 
 
+def kw_in(k, text):
+    """키워드 포함 여부. 짧은 영단어는 단어 단위로만(war→software, ban→urban, ath→death 오탐 방지)."""
+    k = k.lower()
+    if re.fullmatch(r"[a-z]+", k) and len(k) <= 5:
+        return re.search(r"\b%s(?:s|es|ed|ing)?\b" % re.escape(k), text) is not None
+    if re.fullmatch(r"[a-z][a-z ]*", k):
+        return re.search(r"\b%s" % re.escape(k), text) is not None
+    return k in text
+
+
 def match_topic(item, topics):
-    """가장 잘 맞는 토픽과 매칭 강도를 돌려준다. 아무 토픽에도 안 걸리면 None."""
+    """가장 잘 맞는 토픽과 매칭 강도를 돌려준다. 아무 토픽에도 안 걸리면 None.
+
+    제목에 걸린 키워드는 2점, 본문에만 걸린 키워드는 1점이다.
+    본문 요약에 '이란'이 한 번 나온 해커 기사가 '호르무즈 긴급'이 되는 일을 막는다(2026-09-17 실측).
+    반환: (토픽, 강도, 가중치, 제목 적중 수)
+    """
+    title = (item.get("title") or "").lower()
     hay = _hay(item)
-    best, best_hits, best_w = None, 0, 0
+    best, best_hits, best_w, best_t = None, 0, 0, 0
     for name, t in topics.items():
-        hits = 0
+        hits = t_hits = 0
         for kw in t.get("keywords", []):
-            k = kw.lower()
-            # 짧은 영문 티커는 단어 경계로만 매칭(hype/hack 오탐 방지)
-            if len(k) <= 4 and re.fullmatch(r"[a-z]+", k):
-                if re.search(r"\b%s\b" % re.escape(k), hay):
-                    hits += 1
-            elif k in hay:
+            if kw_in(kw, title):
+                hits += 2
+                t_hits += 1
+            elif kw_in(kw, hay):
                 hits += 1
         if hits:
             w = t.get("weight", 15)
             if hits * w > best_hits * best_w:
-                best, best_hits, best_w = name, hits, w
+                best, best_hits, best_w, best_t = name, hits, w, t_hits
     if not best:
-        return None, 0, 0
-    return best, best_hits, best_w
+        return None, 0, 0, 0
+    return best, best_hits, best_w, best_t
 
 
 def score_item(item, cfg):
     topics = cfg.get("topics", {})
-    topic, hits, weight = match_topic(item, topics)
+    topic, hits, weight, title_hits = match_topic(item, topics)
     hay = _hay(item)
 
     # 거래소 공지는 코인명을 몰라도 "상장폐지·입출금 중단" 자체가 신호다
     if not topic and item.get("feed") in ("binance", "upbit"):
         if any(n in hay for n in NOTICE_STRONG):
             topic = "코인 전반·규제"
-            hits, weight = 1, topics.get(topic, {}).get("weight", 18)
+            hits, weight, title_hits = 2, topics.get(topic, {}).get("weight", 18), 1
 
     if not topic:
         return None
 
     title_l = item.get("title", "").lower()
 
-    s = weight + min(hits, 4) * 6            # 토픽 적합도
+    s = weight + min(hits, 8) * 3            # 토픽 적합도(제목 적중 2점, 본문 1점)
     s += SOURCE_BONUS.get(item.get("source"), 0)
     s += SOURCE_BONUS.get(item.get("feed"), 0)
 
     # 긴급도 키워드 — 제목에 있으면 만점, 본문에만 있으면 절반
     fired = []
     for kw, pts in cfg.get("urgency_keywords", {}).items():
-        k = kw.lower()
-        if k in title_l:
+        if kw_in(kw, title_l):
             s += pts
             fired.append(kw)
-        elif k in hay:
+        elif kw_in(kw, hay):
             s += pts // 2
+
+    # 제목에 주제어가 하나도 없으면 '곁가지' 기사 — 긴급으로 올리지 않는다
+    if not title_hits:
+        s -= 12
+        s = min(s, cfg.get("urgent_score", 85) - 1)
 
     # 거래소 공지는 "상장/폐지/중단"류만 의미 있음
     if item.get("feed") in ("binance", "upbit"):
@@ -84,7 +102,7 @@ def score_item(item, cfg):
 
     # 노이즈(전망·분석·추천글) 감점
     for nk in cfg.get("noise_keywords", []):
-        if nk.lower() in title_l:
+        if kw_in(nk, title_l):
             s -= 14
 
     # 숫자(수치·규모)가 든 제목은 사실 보도일 확률이 높다
@@ -104,6 +122,8 @@ def score_item(item, cfg):
 
     out = dict(item)
     out["topic"] = topic
+    if not title_hits:
+        s = min(s, cfg.get("urgent_score", 85) - 1)
     out["score"] = int(max(0, min(100, s)))
     out["fired"] = fired[:4]
     return out

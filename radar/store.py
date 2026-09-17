@@ -15,6 +15,9 @@ def _conn():
     c.execute("CREATE TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY, ts INTEGER)")
     c.execute("CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT, ts INTEGER)")
     c.execute("CREATE TABLE IF NOT EXISTS sent_log (ts INTEGER, score INTEGER, topic TEXT, title TEXT, url TEXT)")
+    cols = {r[1] for r in c.execute("PRAGMA table_info(sent_log)")}
+    if "title_ko" not in cols:  # 예전 DB(캐시)에도 그대로 붙는다
+        c.execute("ALTER TABLE sent_log ADD COLUMN title_ko TEXT")
     return c
 
 
@@ -64,12 +67,25 @@ def log_sent(items):
     c = _conn()
     try:
         c.executemany(
-            "INSERT INTO sent_log VALUES (?,?,?,?,?)",
-            [(now, int(i.get("score", 0)), i.get("topic", ""), i.get("title", "")[:300], i.get("url", "")) for i in items],
+            "INSERT INTO sent_log (ts, score, topic, title, url, title_ko) VALUES (?,?,?,?,?,?)",
+            [(now, int(i.get("score", 0)), i.get("topic", ""), i.get("title", "")[:300], i.get("url", ""),
+              (i.get("title_ko") or "")[:300]) for i in items],
         )
+        c.execute("DELETE FROM sent_log WHERE ts < ?", (now - 30 * 86400,))
         c.commit()
     finally:
         c.close()
+
+
+def recent_sent(hours=18):
+    """최근 보낸 기사 [(번역제목, 원제)] — 같은 사건을 다음 턴에 또 보내지 않기 위해."""
+    c = _conn()
+    try:
+        rows = c.execute("SELECT title_ko, title FROM sent_log WHERE ts >= ?",
+                         (int(time.time()) - int(hours * 3600),)).fetchall()
+    finally:
+        c.close()
+    return [(ko or "", t or "") for ko, t in rows]
 
 
 def get_state(k, default=None):
