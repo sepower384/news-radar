@@ -168,8 +168,6 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
     cfg = cfg or load_config()
     started = datetime.now(KST)
     res = _new_result(mode, dry, started)
-    candidates = _gather(cfg, mode, dry, log, res)
-    new, dropped = _select(cfg, candidates, started, log, res)
 
     if not dry and mode in ("all", "news"):
         try:
@@ -177,6 +175,19 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
             kol.maybe_send(cfg, started, log=log)
         except Exception as e:  # 코너가 실패해도 뉴스 알림은 나간다
             log("  KOL 코너 실패(건너뜀): %s" % e)
+
+    # 하루 1회 모드(강회장 요청 2026-09-18): 정해진 시각 이후 첫 턴에만 지난 24시간 뉴스를 모아 보낸다
+    daily = cfg.get("news_daily") or {"enabled": True, "hour_kst": 8, "max_items": 8, "max_per_topic": 2}
+    today = started.strftime("%Y-%m-%d")
+    if daily.get("enabled") and mode in ("all", "news") and not dry:
+        if started.hour < daily.get("hour_kst", 8) or store.get_state("news_daily_last") == today:
+            log("  하루 1회 모드 — 오늘 발송 시각이 아니거나 이미 보냄")
+            return res
+        cfg = dict(cfg, lookback_hours=24, max_items_per_run=daily.get("max_items", 8),
+                   max_per_topic=daily.get("max_per_topic", 2))
+
+    candidates = _gather(cfg, mode, dry, log, res)
+    new, dropped = _select(cfg, candidates, started, log, res)
 
     if dry:
         log("  [dry-run] 전송 안 함 — 통과 %d건" % len(new))
@@ -193,6 +204,8 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
     if not new:
         log("  보낼 것 없음")
         store.mark_seen([k for k, _ in dropped])
+        if daily.get("enabled"):
+            store.set_state("news_daily_last", today)
         return res
 
     try:
@@ -201,7 +214,10 @@ def cycle(mode="all", dry=False, log=print, cfg=None):
         res["error"] = str(e)
         log("  전송 실패 — seen 미등록(다음 턴 재시도): %s" % e)
         return res
-    return apply_report(res, new, dropped, rep, log=log)
+    res = apply_report(res, new, dropped, rep, log=log)
+    if daily.get("enabled") and res["sent"]:
+        store.set_state("news_daily_last", today)
+    return res
 
 
 def apply_report(res, new, dropped, rep, log=print):

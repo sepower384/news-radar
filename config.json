@@ -7,6 +7,14 @@
       "channel_url": ""
     }
   },
+  "news_daily": {
+    "_설명": "강회장 지시(2026-09-18): 챙겨볼 뉴스는 하루 4개면 충분. 아침 hour_kst 이후 첫 턴에 지난 24시간에서 골라 한 번만 보낸다",
+    "enabled": true,
+    "hour_kst": 8,
+    "max_items": 4,
+    "max_per_topic": 2
+  },
+
   "min_score": 60,
   "urgent_score": 85,
   "max_items_per_run": 5,
